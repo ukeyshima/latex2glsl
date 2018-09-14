@@ -1,0 +1,25 @@
+{
+  "name": "katex-parser-test",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "webpack-dev-server",
+    "start open": "webpack-dev-server --open",
+    "build": "webpack"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "asciimath-to-latex": "^0.3.2",
+    "babel-loader": "^7.1.5",
+    "browser-sync": "^2.24.6",
+    "katex": "^0.10.0-rc.1",
+    "mathjs": "^5.1.1",
+    "mathjs-simple-integral": "^0.1.1",
+    "webpack": "^4.16.3",
+    "webpack-dev-server": "^3.1.5"
+  }
+}
