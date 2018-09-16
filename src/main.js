@@ -2,6 +2,33 @@ const katex = require('katex');
 const mathjs = require('mathjs');
 const mathIntegral = require('mathjs-simple-integral');
 const atl = require('asciimath-to-latex');
+const glsl = require('glsl-man');
+
+const shader = `precision mediump float;
+uniform mat4 invMatrix;
+varying vec3 vPosition;
+varying vec3 vNormal;
+void main(void){
+    vec3 color=vec3(1.0,0.0,1.0);    
+    vec3 ambientColor=vec3(0.1);
+    vec3 lightPosition=vec3(50.0,100.0,10.0);
+    vec3 eyeDirection=vec3(0.0,0.0,1.0);
+    vec3  lightVec  = lightPosition - vPosition;
+    vec3  invLight  = normalize(invMatrix * vec4(lightVec, 0.0)).xyz;
+    vec3  invEye    = normalize(invMatrix * vec4(eyeDirection, 0.0)).xyz;
+    vec3  halfLE    = normalize(invLight + invEye);
+    float diffuse   = clamp(dot(vNormal, invLight), 0.0, 1.0) + 0.2;
+    float specular  = pow(clamp(dot(vNormal, halfLE), 0.0, 1.0), 30.0);
+    color = color * vec3(diffuse) + vec3(specular) + ambientColor;    
+    gl_FragColor=vec4(color,1.0);
+}`;
+
+console.log(glsl.parse(shader));
+
+const canvas = document.createElement('canvas');
+const gl = canvas.getContext('webgl');
+
+let resultCounter = 0;
 
 mathjs.import(mathIntegral);
 let latex2glsl,
@@ -29,11 +56,15 @@ let latex2glsl,
   dot,
   nextMatrixMulti;
 
-int2dec = (input) => {
-  input = input.replace(/((^|[^tc\.])\d+)(?!\.|\d)/g, "$1.0");
-  //input = input.replace(/(?<!mat|vec|\.\d*)(\d+)(?!\.|\d+)/g, "$1.0");
+int2dec = input => {
+  input = input.replace(/(\d+)(?!\.|\d)/g, '$1.0');
+  input = input.replace(/mat(\d)\.0/g, 'mat$1');
+  input = input.replace(/vec(\d)\.0/g, 'vec$1');
+  input = input.replace(/result(\d+)\.0/g, 'result$1');
+  input = input.replace(/\[(\d+)\.0/g, '[$1');
+  input = input.replace(/\.(\d+)\.0/g, '.$1');
   return input;
-}
+};
 
 radix = input => {
   return input.index
@@ -50,11 +81,11 @@ frac = input => {
 pow = input => {
   return `pow(${
     input.base.type === 'leftright' ? shape(input.base.body) : shape(input.base)
-    },${
+  },${
     input.sup.body[0].type === 'leftright'
       ? shape(input.sup.body[0].body)
       : shape(input.sup.body)
-    })`;
+  })`;
 };
 
 sin = input => {
@@ -99,18 +130,20 @@ log = input => {
 };
 
 sum = input => {
+  resultCounter++;
   const expression = shape(input.slice(1, input.length));
-  const start = shape(input[0].sub.body);
+  const index = input[0].sub.body.findIndex(e => {
+    return e.type === 'atom' && e.text === '=';
+  });
+  const startVari = shape(input[0].sub.body.slice(0, index));
+  const startValu = shape(
+    input[0].sub.body.slice(index + 1, input[0].sub.body.length)
+  );
   const end = shape(input[0].sup.body);
-
-  return `
-        let result = 0;
-        for(float ${start[0]}=${start.slice(2, start.length)};${
-    start[0]
-    }<${end};${start[0]}++){
-            result += ${expression};
-        }
-        return result;`
+  return `float result${resultCounter} = 0.0;
+        for(float ${startVari}=${startValu};${startVari}<${end};${startVari}++){
+            result${resultCounter} += ${expression};
+        }`;
 };
 
 definiteIntegral = (input, deltaIndex) => {
@@ -157,50 +190,52 @@ matrix = input => {
     input.length === 1
       ? shape(input[0])
       : input.reduce((previousValue, currentValue) => {
-        return shape(previousValue).match(/\[$/) ||
-          currentValue.type === 'spacing'
-          ? `${shape(previousValue)}${shape(currentValue)}`
-          : `${shape(previousValue)},${shape(currentValue)}`;
-      });
-  input = input.split("],[").length === input.split(",").length ?
-    `vec${input.split("],[").length}(${input.replace(/\]\,\[/g, ",")})`
-    : `mat${input.split("],[").length}(${input.replace(/\]\,\[/g, ",")})`;
+          return shape(previousValue).match(/\[$/) ||
+            currentValue.type === 'spacing'
+            ? `${shape(previousValue)}${shape(currentValue)}`
+            : `${shape(previousValue)},${shape(currentValue)}`;
+        });
+  input =
+    input.split('],[').length === input.split(',').length
+      ? `vec${input.split('],[').length}(${input.replace(/\]\,\[/g, ',')})`
+      : `mat${input.split('],[').length}(${input.replace(/\]\,\[/g, ',')})`;
   return input;
 };
 
 dot = (input1, input2) => {
-  if (input2.type === "accent") {
-    return `dot(${shape(input1.base)},${shape(input2.base)})`
+  if (input2.type === 'accent') {
+    return `dot(${shape(input1.base)},${shape(input2.base)})`;
   } else {
-    return `dot(${shape(input1.base)},${shape(input2)})`
+    return `dot(${shape(input1.base)},${shape(input2)})`;
   }
-
-}
+};
 
 vecShape = input => {
   let result;
   switch (input[0].type) {
     case 'accent':
       switch (input[0].label) {
-        case "\\vec":
-          result = `${input.length > 1 ?
-            (input[1].type === "atom"
-              && input[1].text === "\\cdot") ?
-              `${dot(input[0], input[2])}${nextMulti(input, 3)}`
-              : `${shape(input[0].base)}${shape(input.slice(1, input.length))}`
-            : `${shape(input[0].base)}`
-            }`;
+        case '\\vec':
+          result = `${
+            input.length > 1
+              ? input[1].type === 'atom' && input[1].text === '\\cdot'
+                ? `${dot(input[0], input[2])}${nextMulti(input, 3)}`
+                : `${shape(input[0].base)}${shape(
+                    input.slice(1, input.length)
+                  )}`
+              : `${shape(input[0].base)}`
+          }`;
           break;
-        case "\\overlightarrow":
+        case '\\overlightarrow':
           result = shape(input[0].base);
           break;
         default:
           break;
       }
       break;
-    case "atom":
+    case 'atom':
       switch (input[0].text) {
-        case "\\cdot":
+        case '\\cdot':
           break;
         default:
           break;
@@ -212,13 +247,13 @@ vecShape = input => {
             ? matrixShape(input)
             : matrix(input[0].body[0].body[0])
           : `${leftright(input[0])}${nextMulti(input, 1)}`
-        }`;
+      }`;
       break;
     default:
       break;
   }
   return result;
-}
+};
 
 nextMatrixMulti = (input, num) => {
   return input.length > num
@@ -226,17 +261,26 @@ nextMatrixMulti = (input, num) => {
       input[num].type !== 'punct' &&
       input[num].type !== 'bin' &&
       input[num].type !== 'spacing'
-      ? '*'
-      : '') + matrixShape(input.slice(num, input.length))
+        ? '*'
+        : '') + matrixShape(input.slice(num, input.length))
     : ``;
 };
 
 matrixShape = input => {
-  if (typeof input === 'string') return input;
   let result;
   switch (input[0].type) {
     case 'leftright':
-      result = `${matrix(input[0].body[0].body[0])}${nextMatrixMulti(input, 1)}`
+      result = (() => {
+        return input.length > 1 &&
+          matrix(input[0].body[0].body[0]).slice(0, 3) === 'vec' &&
+          input[1].type === 'leftright' &&
+          matrix(input[1].body[0].body[0]).slice(0, 3) === 'vec'
+          ? `dot(${matrix(input[0].body[0].body[0])},${matrix(
+              input[1].body[0].body[0]
+            )})`
+          : `${matrix(input[0].body[0].body[0])}${nextMatrixMulti(input, 1)}`;
+      })();
+
       break;
     case 'atom':
       switch (input[0].text) {
@@ -259,8 +303,8 @@ nextMulti = (input, num) => {
       input[num].type !== 'punct' &&
       input[num].type !== 'bin' &&
       input[num].type !== 'spacing'
-      ? '*'
-      : '') + shape(input.slice(num, input.length))
+        ? '*'
+        : '') + shape(input.slice(num, input.length))
     : ``;
 };
 
@@ -279,54 +323,131 @@ shape = input => {
   }
   switch (input[0].type) {
     case 'textord':
-      result = `${input[0].text === '\\infty' ? 99999999999.99 : input[0].text}${
+      result = `${input[0].text === '\\infty' ? 99999999.99 : input[0].text}${
         input.length > 1
           ? (input[1].type !== 'textord' &&
             input[1].type !== 'atom' &&
             input[1].type !== 'bin' &&
             input[1].type !== 'spacing'
-            ? '*'
-            : '') + shape(input.slice(1, input.length))
+              ? '*'
+              : '') + shape(input.slice(1, input.length))
           : ``
-        }`;
+      }`;
       break;
     case 'mathord':
-      result = `${input[0].text === '\\pi' ? `3.1` : input[0].text}${
-        input.length > 1
-          ? input[1].type === 'leftright' && input[1].left === '['
-            ? `[${shape(input[1].body)}]${
-            input.length > 2
-              ? (input[2].type !== 'atom' &&
-                input[2].type !== 'punct' &&
-                input[2].type !== 'bin' &&
-                input[2].type !== 'spacing' &&
-                (input[2].type === 'leftright'
-                  ? shape(input[2]).length !== 3 &&
-                  !/\,/.test(shape(input[1])) &&
-                  !input[2].left === '['
-                  : true)
-                ? `*`
-                : ``) + shape(input.slice(2, input.length))
-              : ``
-            }`
-            : (input[1].type !== 'atom' &&
-              input[1].type !== 'punct' &&
-              input[1].type !== 'bin' &&
-              input[1].type !== 'spacing' &&
-              (input[1].type === 'leftright'
-                ? shape(input[1]).length !== 3 &&
-                !/\,/.test(shape(input[1])) &&
-                !input[1].left === '['
-                : true)
-              ? `*`
-              : ``) + shape(input.slice(1, input.length))
-          : ``
-        }`;
+      result = `${
+        input[0].text === '\\pi'
+          ? `3.141592`
+          : (() => {
+              const nextExpression = `${
+                input.length > 1
+                  ? input[1].type === 'leftright' &&
+                    input[1].left === '[' &&
+                    input[1].right === ']'
+                    ? (() => {
+                        let index = input
+                          .slice(1, input.length)
+                          .findIndex(e => {
+                            return !(
+                              e.type === 'leftright' &&
+                              e.left === '[' &&
+                              e.right === ']'
+                            );
+                          });
+                        index = index === -1 ? input.length - 1 : index;
+                        const array = input.slice(2, index + 1);
+                        array.unshift(`[${shape(input[1].body)}]`);
+                        return `${array.reduce((pre, cur) => {
+                          return pre + `[${shape(cur.body)}]`;
+                        })}${
+                          input.length > index + 1
+                            ? (input[index + 1].type !== 'atom' &&
+                              input[index + 1].type !== 'punct' &&
+                              input[index + 1].type !== 'bin' &&
+                              input[index + 1].type !== 'spacing' &&
+                              (input[index + 1].type === 'leftright'
+                                ? shape(input[index + 1]).length !== 3 &&
+                                  !/\,/.test(shape(input[index])) &&
+                                  !input[index + 1].left === '['
+                                : true)
+                                ? `*`
+                                : ``) +
+                              shape(input.slice(index + 1, input.length))
+                            : ``
+                        }`;
+                      })()
+                    : (input[1].type !== 'atom' &&
+                      input[1].type !== 'punct' &&
+                      input[1].type !== 'bin' &&
+                      input[1].type !== 'spacing' &&
+                      (input[1].type === 'leftright'
+                        ? shape(input[1]).length !== 3 &&
+                          !/\,/.test(shape(input[1])) &&
+                          !input[1].left === '['
+                        : true)
+                        ? `*`
+                        : ``) + shape(input.slice(1, input.length))
+                  : ``
+              }`;
+
+              return input.length > 1 &&
+                input[1].type === 'atom' &&
+                input[1].text === '='
+                ? (() => {
+                    const shader = gl.createShader(gl.VERTEX_SHADER);
+                    gl.shaderSource(
+                      shader,
+                      `void main(void) {
+                        mat2 expression${int2dec(nextExpression)};}`
+                    );
+                    gl.compileShader(shader);
+                    return `${
+                      gl.getShaderParameter(shader, gl.COMPILE_STATUS)
+                        ? 'float'
+                        : (() => {
+                            const splitText = gl
+                              .getShaderInfoLog(shader)
+                              .split("'");
+                            const errorText = splitText[splitText.length - 4];
+                            let result = '';
+                            switch (errorText) {
+                              case 'const float':
+                                result = 'float';
+                                break;
+                              case 'const highp 2-component vector of float':
+                                result = 'vec2';
+                                break;
+                              case 'const highp 3-component vector of float':
+                                result = 'vec3';
+                                break;
+                              case 'const highp 4-component vector of float':
+                                result = 'vec3';
+                                break;
+                              case 'const highp 2X2 matrix of float':
+                                result = 'mat2';
+                                break;
+                              case 'const highp 3X3 matrix of float':
+                                result = 'mat3';
+                                break;
+                              case 'const highp 4X4 matrix of float':
+                                result = 'mat4';
+                                break;
+                              default:
+                                result = 'float';
+                                break;
+                            }
+                            return result;
+                          })()
+                    } ${input[0].text}${nextExpression}`;
+                  })()
+                : `${input[0].text}${nextExpression}`;
+            })()
+      }`;
       break;
     case 'spacing':
       result = `],[${
         input.length > 1 ? shape(input.slice(1, input.length)) : ''
-        }`;
+      }`;
       break;
     case 'styling':
       result = shape(input[0].body);
@@ -345,7 +466,7 @@ shape = input => {
     case 'punct':
       result = `${input[0].value}${
         input.length > 1 ? shape(input.slice(1, input.length)) : ``
-        }`;
+      }`;
       break;
     case 'ordgroup':
       result = `${shape(input[0].body)}${nextMulti(input, 1)}`;
@@ -354,7 +475,7 @@ shape = input => {
       result = `${radix(input[0])}${nextMulti(input, 1)}`;
       break;
     case 'accent':
-      result = input[0].label === "\\vec" ? vecShape(input) : "";
+      result = input[0].label === '\\vec' ? vecShape(input) : '';
       break;
     case 'leftright':
       result = `${
@@ -363,13 +484,49 @@ shape = input => {
             ? matrixShape(input)
             : matrix(input[0].body[0].body[0])
           : `${leftright(input[0])}${nextMulti(input, 1)}`
-        }`;
+      }`;
       break;
     case 'array':
       result = shape(input[0].body[0][0]);
       break;
     case 'genfrac':
-      result = `${frac(input[0])}${nextMulti(input, 1)}`;
+      if (
+        (input[0].numer.body[0].type === 'supsub' &&
+          input[0].numer.body[0].base.name === '\\sum') ||
+        (input[0].denom.body[0].type === 'supsub' &&
+          input[0].denom.body[0].base.name === '\\sum')
+      ) {
+        const numerExpression =
+          input[0].numer.body[0].type === 'supsub' &&
+          input[0].numer.body[0].base.name === '\\sum'
+            ? sum(input[0].numer.body)
+            : (() => {
+                resultCounter++;
+                return `float result${resultCounter}=${shape(
+                  input[0].numer.body
+                )};`;
+              })();
+        const numerResult = `result${resultCounter}`;
+        const denomExpression =
+          input[0].denom.body[0].type === 'supsub' &&
+          input[0].denom.body[0].base.name === '\\sum'
+            ? sum(input[0].denom.body)
+            : (() => {
+                resultCounter++;
+                return `float result${resultCounter}=${shape(
+                  input[0].denom.body
+                )};`;
+              })();
+        const denomResult = `result${resultCounter}`;
+        resultCounter++;
+        result = `${numerExpression}
+        ${denomExpression}
+        float result${resultCounter}=${numerResult}/${denomResult};
+        `;
+      } else {
+        result = `${frac(input[0])}${nextMulti(input, 1)}`;
+      }
+
       break;
     case 'bin':
       switch (input[0].value) {
@@ -415,7 +572,7 @@ shape = input => {
             result = `${log(input)}${nextMulti(input, 2)}`;
             break;
           case '\\sum':
-            result = `${sum(input)}${nextMulti(input, 2)}`;
+            result = sum(input);
             break;
           case '\\int':
             const deltaIndex = input.findIndex(e => {
@@ -430,7 +587,32 @@ shape = input => {
             result = `${limit(input)}${nextMulti(input, 2)}`;
             break;
           default:
-            result = `${shape(input[0].base)}.${shape(input[0].sub.body)}`
+            const array = input[0].sub.body.find(e => {
+              return e.type === 'textord';
+            });
+            result = `${shape(input[0].base)}${
+              array
+                ? (() => {
+                    let elementIndex = `[${shape(input[0].sub.body)}]`;
+                    elementIndex = elementIndex.replace(/,/g, '][');
+                    return elementIndex + nextMulti(input, 1);
+                  })()
+                : (() => {
+                    console.log(input);
+                    const index = input[0].sub.body.slice(
+                      1,
+                      input[0].sub.body.length
+                    );
+                    index.unshift(`${input[0].sub.body[0].text}`);
+                    return (
+                      '.' +
+                      index.reduce((prev, curr) => {
+                        return prev + curr.text;
+                      }) +
+                      nextMulti(input, 1)
+                    );
+                  })()
+            }`;
             break;
         }
       } else {
@@ -448,41 +630,71 @@ shape = input => {
   return result;
 };
 
-export default latex2glsl = input => {
+export default (latex2glsl = input => {
+  resultCounter = 0;
   while (input.search(/\n/) >= 0) {
     input = input.replace(/\n/g, ' ');
   }
   input = matrixParse(input);
   const parseTree = katex.__parse(input);
-  console.log(shape(parseTree))
   return int2dec(shape(parseTree));
-};
+});
 
-
-// console.log(latex2js(`\\begin{aligned}\\begin{pmatrix}
-// x \\
-// y
+// console.log(latex2glsl(`x_{1,0,3,4}`));
+// console.log(latex2glsl(`x_{10}`));
+// console.log(latex2glsl(`p_{xy}`));
+// console.log(
+//   latex2glsl(`\\begin{aligned}\\begin{pmatrix}
+// x & 2\\
+// y & 1
 // \\end{pmatrix}-\\begin{pmatrix}
-// i\\left[ 0\\right] \\left[ 0\\right]  \\
-// i\\left[ 0\\right] \\left[ 1\\right] 
-// \\end{pmatrix}\\end{aligned}`))
-// console.log(latex2js(`\\begin{aligned}\\begin{pmatrix}
+// i\\left[ 0\\right] \\left[ 1\\right] \\left[ 2\\right] 3 & u\\left[ 0\\right] \\left[ 1\\right]  \\
+// i\\left[ 0\\right] \\left[ 1\\right] & U\\left[ 0\\right] \\left[ 1\\right]
+// \\end{pmatrix}\\end{aligned}`)
+// );
+// console.log(
+//   latex2glsl(`\\begin{aligned}\\begin{pmatrix}
+// 1 & 2 \\
+// 0 & 0
+// \\end{pmatrix}\\begin{pmatrix}
+// 2 & 4 \\
+// 5 & 3
+// \\end{pmatrix}+\\begin{pmatrix}
+// 1 & 2 \\
+// 9 & 2
+// \\end{pmatrix}\\end{aligned}`)
+// );
+// console.log(
+//   latex2glsl(`\\begin{aligned}\\begin{pmatrix}
+// 1.5 & i\\left[ 0\\right] & 0 & 3^{4^{2}} \\
+// 0.9 & \\left[ n\\right] & 0 & 0 \\
+// 0 & 0 & 1 & \\cos \\left( \\pi \\right) \\
+// 0 & 0 & 0 & 1
+// \\end{pmatrix}\\begin{pmatrix}
+// 2 & 3 & 4 & v \\
+// t & g & 3 & 2 \\
+// 0 & a & 3 & 1 \\
+// 5 & 2 & 2 & k
+// \\end{pmatrix}\\begin{pmatrix}
+// 4 & 2 & 4 & 8 \\
+// 5 & 9 & h & 2 \\
+// 6 & h & b & n \\
+// k & g & a & x
+// \\end{pmatrix}-\\begin{pmatrix}
+// 4 & s & 4 & 8 \\
+// 5 & r & h & 2 \\
+// m & r & b & n \\
+// b & t & a & 3
+// \\end{pmatrix}\\end{aligned}`)
+// );
+// console.log(
+//   latex2glsl(`\\begin{aligned}\\begin{pmatrix}
 // \\left[ x\\right]  \\
-// \\left[ y\\right] 
-// \\end{pmatrix}\\end{aligned}`))
-// console.log(latex2glsl(`\\begin{aligned}\\begin{pmatrix}
-// a & 0 & 1 \\
-// 2 & 3 & 1 \\
-// 4 & b & 1
-// \\end{pmatrix}\\end{aligned}`))
-// console.log(latex2glsl(`\\begin{aligned}\\begin{pmatrix}
-// 1 \\
-// 0 \\
-// 3
-// \\end{pmatrix}\\end{aligned}`))
-// console.log(latex2glsl(`3\\vec {a}\\cdot \\overrightarrow {b}`))
+// \\left[ y\\right]
+// \\end{pmatrix}\\end{aligned}`)
+// );
 // console.log(latex2glsl(`n-\\left[ n\\right] `));
-// // console.log(latex2js(`c\\left[ 0\\right] +2`));
+// console.log(latex2glsl(`c\\left[ 0\\right] +2`));
 // console.log(latex2glsl(`p\\left( 0\\right) +2`));
 // console.log(
 //   latex2glsl(
@@ -514,19 +726,6 @@ export default latex2glsl = input => {
 // );
 // console.log(latex2glsl('3^{4^{2}}'));
 // console.log(
-//   latex2glsl(`\\begin{aligned}\\begin{pmatrix}
-// n & 0 & 2\\
-// 0 & a & 8
-// \\end{pmatrix}\\begin{pmatrix}
-// 3 & b \\
-// 0 & s \\
-// 3 & 5
-// \\end{pmatrix}\\begin{pmatrix}
-// 2 & 0 \\
-// f & 4
-// \\end{pmatrix}\\end{aligned}`)
-// );
-// console.log(
 //   latex2glsl(
 //     `\\begin{aligned}\\begin{pmatrix} 1 \\ 0 \\end{pmatrix}\\begin{pmatrix} 3 & 2 \\end{pmatrix}\\end{aligned}`
 //   )
@@ -546,33 +745,11 @@ export default latex2glsl = input => {
 //     `\\begin{aligned}\\sin \\left( \\begin{pmatrix} 3 \\ 4 \\end{pmatrix}\\begin{pmatrix} a \\ h \\end{pmatrix}\\right) \\cdot 64\\end{aligned}`
 //   )
 // );
-// console.log(
-//   eval(
-//     latex2js('\\lim _{x\\rightarrow \\infty }\\left( \\dfrac {3}{x}\\right) ')
-//   )
-// );
-// console.log(
-//   eval(
-//     latex2js('\\lim _{x\\rightarrow \\infty }\\left( \\dfrac {x}{2}\\right) ')
-//   )
-// );
 // console.log(latex2glsl('3+3'));
 // console.log(latex2glsl('x+y'));
 // console.log(latex2glsl('3-2'));
 // console.log(latex2glsl('x-y'));
 // console.log(latex2glsl("\\left( \\log \\left( x\\right)\\right) '"));
-// console.log(latex2glsl('\\int ^{3}_{2}5xdx'));
-// console.log(latex2glsl('\\int 3x^{5}dx'));
-// console.log(latex2glsl('\\int \\log \\left( x\\right) dx'));
-// console.log(latex2glsl('\\sum ^{10}_{k=1}\\left( 3k^{3}\\right)'));
-// console.log(latex2glsl('\\sum ^{10}_{k=1}p\\left( x,y\\right) '));
-// console.log(latex2glsl('\\sum ^{10}_{k=1}p\\left( xy\\right) '));
-// console.log(latex2glsl('\\sum ^{10}_{k=1}p\\left( x\\right) '));
-console.log(
-  latex2glsl(
-    '\\dfrac {\\sum ^{10}_{k=1}\\left( \\left( \\dfrac {1}{2}\\right) ^{k}p\\left( 2^{k}x,2^{k}y\\right) \\right) }{\\sum ^{10}_{k=1}\\left( \\dfrac {1}{2}\\right) ^{k}}'
-  )
-);
 // console.log(latex2glsl('42^{3}'));
 // console.log(latex2glsl('\\left( 42\\right) ^{\\left( 3\\right)}'));
 // console.log(latex2glsl('\\sqrt {3}'));
@@ -587,15 +764,67 @@ console.log(
 // console.log(latex2glsl('3x\\sqrt {y}'));
 // console.log(latex2glsl('32x\\sqrt {2}'));
 // console.log(latex2glsl('8\\sqrt {\\dfrac {42^{3}}{3}}'));
+
+console.log(latex2glsl(`y=2`));
+console.log(latex2glsl(`y=\\sqrt {\\dfrac {3^{5}}{2}}`));
+console.log(
+  latex2glsl(`y=\\begin{aligned}\\begin{pmatrix}
+1.5 & 2 & 0 & 3^{4^{2}} \\
+0.9 & \\left[ n\\right] & 0 & 0 \\
+0 & 0 & 1 & \\cos \\left( \\pi \\right) \\
+0 & 0 & 0 & 1
+\\end{pmatrix}\\begin{pmatrix}
+2 & 3 & 4 & v \\
+t & g & 3 & 2 \\
+0 & a & 3 & 1 \\
+5 & 2 & 2 & k
+\\end{pmatrix}\\begin{pmatrix}
+4 & 2 & 4 & 8 \\
+5 & 9 & h & 2 \\
+6 & h & b & n \\
+k & g & a & x
+\\end{pmatrix}-\\begin{pmatrix}
+4 & s & 4 & 8 \\
+5 & r & h & 2 \\
+m & r & b & n \\
+b & t & a & 3
+\\end{pmatrix}\\end{aligned}`)
+);
+console.log(
+  latex2glsl(`y=\\begin{aligned}\\begin{pmatrix}
+1.5 & 2  & 3^{4^{2}} \\
+\\left[ n\\right] & 0 & 0 \\
+0 & 0 &  \\cos \\left( \\pi \\right)
+\\end{pmatrix}\\end{aligned}`)
+);
+console.log(
+  latex2glsl(`y=\\begin{aligned}\\begin{pmatrix}
+1.5  \\
+\\left[ n\\right] \\
+\\cos \\left( \\pi \\right) 
+\\end{pmatrix}\\end{aligned}`)
+);
+// console.log(
+//   latex2glsl('\\lim _{x\\rightarrow \\infty }\\left( \\dfrac {3}{x}\\right) ')
+// );
+// console.log(
+//   latex2glsl('\\lim _{x\\rightarrow \\infty }\\left( \\dfrac {x}{2}\\right) ')
+// );
+// console.log(latex2glsl('\\int ^{3}_{2}5xdx'));
+// console.log(latex2glsl('\\int 3x^{5}dx'));
+// console.log(latex2glsl('\\int \\log \\left( x\\right) dx'));
+// console.log(latex2glsl('\\sum ^{10}_{k=1}\\left( 3k^{3}\\right)'));
+// console.log(latex2glsl('\\sum ^{10}_{k=1}p\\left( x,y\\right) '));
+// console.log(latex2glsl('\\sum ^{10}_{k=1}p\\left( xy\\right) '));
+// console.log(latex2glsl('\\sum ^{10}_{k=1}p\\left( x\\right) '));
+// console.log(
+//   latex2glsl(
+//     '\\dfrac {\\sum ^{7}_{k=1}\\left( \\left( \\dfrac {1}{2}\\right) ^{k}h\\left( 2^{k}p_{x},2^{k}p_{y}\\right) \\right) }{\\sum ^{10}_{k=1}\\left( \\dfrac {1}{2}\\right) ^{k}}'
+//   )
+// );
+// console.log(
+//   latex2glsl(
+//     '\\dfrac {\\sum ^{10}_{k=1}\\left( \\left( \\dfrac {1}{2}\\right) ^{k}p\\left( 2^{k}x,2^{k}y\\right) \\right) }{\\cos \\left( \\pi \\right)}'
+//   )
+// );
 // console.log(latex2glsl('\\sum ^{10}_{k=1}\\left( 3k^{2}\\right) '));
-// console.log(latex2glsl(`\\begin{aligned}\\vec {p}\\cdot \\begin{pmatrix}
-// 13.0 \\
-// 2.3 \\
-// 5.9
-// \\end{pmatrix}\\end{aligned}`))
-// console.log(latex2glsl(`\\begin{aligned}\\vec {l}+\\begin{pmatrix}
-// 1 \\
-// 0 \\
-// 0
-// \\end{pmatrix}\\end{aligned}`))
-// console.log(latex2glsl(`p_{x}`))
