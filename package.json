@@ -16,6 +16,7 @@
     "asciimath-to-latex": "^0.3.2",
     "babel-loader": "^7.1.5",
     "browser-sync": "^2.24.6",
+    "glsl-man": "^1.1.14",
     "katex": "^0.10.0-rc.1",
     "mathjs": "^5.1.1",
     "mathjs-simple-integral": "^0.1.1",
